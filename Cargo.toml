@@ -1,0 +1,16 @@
+[package]
+name = "qmulo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.93"
+clap = { version = "4.5.21", features = ["derive"] }
+crossterm = "0.28.1"
+ureq = { version = "2.10.1", features = ["json"] }
+serde = { version = "1.0.215", features = ["derive"] }
+fastembed = "4.1.0"
+qdrant-client = { version = "1.12.1", features = ["serde"] }
+tokio = { version = "1.41.1", features = ["macros", "rt-multi-thread"] }
+tonic = "0.12.3"
+serde_json = "1.0.133"
