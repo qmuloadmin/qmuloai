@@ -22,7 +22,10 @@ struct Config {
     llm_host: String,
     #[arg(short='c', long)]
     /// The directory where embedding models will be written to and read from on each start
-    model_cache: String
+    model_cache: String,
+    #[arg(short='q', long, default_value = "localhost:6334")]
+    /// The hostname and port of the Qdrant server
+    qdrant_host: String
 }
 
 struct ChatContext {
@@ -30,18 +33,20 @@ struct ChatContext {
     context: Vec<Message>,
     // Enable using the chat without Qdrant/embeddings if no commands are ever executed
     embedding_model: Option<TextEmbedding>,
-    qclient: Option<Qdrant>,
+    qclient: Qdrant,
     commands: BTreeMap<String, Command>,
 }
 
 impl ChatContext {
     fn new(config: &Config, sys_prompt: String) -> Result<Self, anyhow::Error> {
         let commands = BTreeMap::new();
+        let qclient = Qdrant::from_url(format!("http://{}", config.qdrant_host).as_str()).build()
+            .context("Failed to build Qdrant vector db client")?;
         Ok(Self {
             endpoint: format!("http://{}/generate", config.llm_host),
             context: vec![Message{role: System, content: sys_prompt}],
             embedding_model: None,
-            qclient: None,
+            qclient,
             commands
         })
     }
@@ -51,9 +56,7 @@ impl ChatContext {
                 .with_show_download_progress(true)
                 .with_cache_dir(PathBuf::from("~/Projects/llms/models/"))
         ).context("Failed to load local embedding model")?);
-        self.qclient = Some(Qdrant::from_url("http://localhost:6334").build()
-            .context("Failed to build Qdrant vector db client")?);
-        match self.qclient.as_ref().unwrap().create_collection(
+        match self.qclient.create_collection(
             CreateCollectionBuilder::new(COMMAND_COLL_NAME)
                 .vectors_config(VectorParamsBuilder::new(1024, Distance::Dot))).await {
             Ok(_) => {},
@@ -73,7 +76,9 @@ impl ChatContext {
             description: "delete the last assistant response and regenerate it again, or retry the last response".into(),
             f: Rc::new(Box::new(|ctx| {
                 ctx.context.pop();
-                ctx.send_context()
+                ctx.send_context()?;
+                println!("{}", ctx.context[ctx.context.len() - 1].content);
+                Ok(())
             })),
         });
         self.commands.insert("hint".into(), Command{
@@ -116,13 +121,13 @@ impl ChatContext {
             let (_, command) = self.commands.iter().nth(idx).unwrap();
             points.push(PointStruct::new(idx as u64 + 1, embedding, Payload::try_from(serde_json::to_value(command)?)?));
         }
-        self.qclient.as_ref().unwrap().upsert_points(UpsertPointsBuilder::new(COMMAND_COLL_NAME, points)).await?;
+        self.qclient.upsert_points(UpsertPointsBuilder::new(COMMAND_COLL_NAME, points)).await?;
         Ok(())
     }
     async fn run_command(&mut self, command: String) -> Result<(), anyhow::Error> {
         let mut embedding = self.embedding_model.as_ref().unwrap().embed(vec![format!("query: {}", command)], None)?;
         let first = embedding.pop().unwrap();
-        let response = self.qclient.as_ref().unwrap().query(
+        let response = self.qclient.query(
             QueryPointsBuilder::new(COMMAND_COLL_NAME).query(first).with_payload(true)
         ).await?;
         let id = response.result[0].get("id");
